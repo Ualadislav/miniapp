@@ -1,0 +1,24 @@
+services:
+  app:
+    platform: linux/amd64
+    build:
+      context: .
+    image: telegram-habit-miniapp:latest
+    container_name: habit-miniapp
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3000
+      DATABASE_PATH: /app/data/habits.sqlite
+      BACKUP_DIR: /app/backups
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./data:/app/data
+      - ./backups:/app/backups
+    init: true
+    security_opt:
+      - no-new-privileges:true

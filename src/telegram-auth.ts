@@ -11,8 +11,8 @@ const telegramUserSchema = z.object({
 
 export type TelegramUser = z.infer<typeof telegramUserSchema>;
 
-const botToken = process.env.BOT_TOKEN;
-if (!botToken) {
+const botToken = process.env.BOT_TOKEN?.trim() ?? "";
+if (botToken.length === 0) {
   throw new Error("BOT_TOKEN is required to verify Telegram Mini App initData");
 }
 

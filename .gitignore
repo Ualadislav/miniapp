@@ -8,4 +8,6 @@ backups/
 bot_token.txt
 dist/
 coverage/
+*.tar
+data/
 алгоритм_миниапп.txt
