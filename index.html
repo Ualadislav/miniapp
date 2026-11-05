@@ -167,9 +167,12 @@
       const DAY_MS = 86400000;
       const today = dateKey(new Date());
       const weekdays = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
+      const tg = window.Telegram && window.Telegram.WebApp;
       const listEl = document.getElementById("habitList");
       const form = document.getElementById("habitForm");
       const backdrop = document.getElementById("modalBackdrop");
+      const addButton = document.getElementById("addBtn");
+      const pendingToggles = new Set();
       let toastTimer;
 
       function dateKey(date) {
@@ -198,15 +201,40 @@
           return [];
         }
       }
-      let habits = safeLoad();
-      function save() {
+      let habits = [];
+      async function apiRequest(path, options) {
+        const headers = { Authorization: "tma " + (tg ? tg.initData : "") };
+        if (options && options.body) headers["Content-Type"] = "application/json";
+        const response = await fetch(path, Object.assign({}, options || {}, { headers: headers }));
+        if (response.status === 204) return null;
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "Ошибка сервера");
+        return result;
+      }
+      async function initialize() {
+        addButton.disabled = true;
+        if (!tg || !tg.initData) {
+          showToast("Откройте приложение через Telegram, чтобы загрузить привычки");
+          return;
+        }
         try {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(habits));
-          return true;
+          await apiRequest("/api/auth/telegram", { method: "POST" });
+          habits = await apiRequest("/api/habits");
+          if (habits.length === 0) {
+            const localHabits = safeLoad();
+            if (localHabits.length > 0) {
+              habits = await apiRequest("/api/habits/import", {
+                method: "POST",
+                body: JSON.stringify({ habits: localHabits })
+              });
+              localStorage.removeItem(STORAGE_KEY);
+            }
+          }
+          addButton.disabled = false;
+          render();
         } catch (error) {
-          console.error("Не удалось сохранить список привычек в localStorage.", error);
-          showToast("Не удалось сохранить данные. Проверьте свободное место в браузере.");
-          return false;
+          console.error("Не удалось загрузить привычки с сервера.", error);
+          showToast("Не удалось подключиться к серверу. Попробуйте открыть приложение позже.");
         }
       }
       function showToast(message) {
@@ -300,17 +328,24 @@
         if (last === 1) return forms[0];
         return forms[2];
       }
-      function toggleHabit(id) {
+      async function toggleHabit(id) {
         const habit = habits.find(function (item) { return item.id === id; });
-        if (!habit) return;
-        const previous = habit.completed.slice();
-        if (habit.completed.includes(today)) habit.completed = habit.completed.filter(function (day) { return day !== today; });
-        else habit.completed.push(today);
-        if (!save()) {
-          habit.completed = previous;
-          return;
+        if (!habit || pendingToggles.has(id)) return;
+        pendingToggles.add(id);
+        const wasDone = habit.completed.includes(today);
+        try {
+          await apiRequest("/api/habits/" + encodeURIComponent(id) + "/completions/" + today, {
+            method: wasDone ? "DELETE" : "PUT"
+          });
+          if (wasDone) habit.completed = habit.completed.filter(function (day) { return day !== today; });
+          else habit.completed.push(today);
+          render();
+        } catch (error) {
+          console.error("Не удалось сохранить отметку привычки.", error);
+          showToast("Не удалось сохранить отметку. Попробуйте ещё раз.");
+        } finally {
+          pendingToggles.delete(id);
         }
-        render();
       }
       function periodStats(days) {
         const end = new Date(today + "T12:00:00");
@@ -378,10 +413,6 @@
         habits.forEach(function (habit) {
           if (!habit.reminder || habit.reminder !== time || habit.reminderSentFor === day || habit.completed.includes(day)) return;
           habit.reminderSentFor = day;
-          if (!save()) {
-            habit.reminderSentFor = "";
-            return;
-          }
           showToast("Пора выполнить привычку: " + habit.name);
           if ("Notification" in window && Notification.permission === "granted") {
             new Notification("Список привычек", { body: "Пора: " + habit.name, tag: habit.id + "-" + day });
@@ -400,34 +431,40 @@
       document.getElementById("closeModal").addEventListener("click", closeModal);
       backdrop.addEventListener("click", function (event) { if (event.target === backdrop) closeModal(); });
       document.addEventListener("keydown", function (event) { if (event.key === "Escape") closeModal(); });
-      form.addEventListener("submit", function (event) {
+      form.addEventListener("submit", async function (event) {
         event.preventDefault();
         const data = new FormData(form);
-        const habit = {
-          id: window.crypto && typeof window.crypto.randomUUID === "function" ? window.crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2),
+        const habitInput = {
           name: String(data.get("name") || "").trim(),
           icon: String(data.get("icon") || "⭐"),
-          reminder: String(data.get("reminder") || ""),
-          reminderSentFor: "",
-          createdAt: today,
-          completed: []
+          reminder: String(data.get("reminder") || "")
         };
-        if (!habit.name) return;
-        habits.push(habit);
-        if (!save()) {
-          habits.pop();
-          return;
-        }
-        closeModal();
-        render();
-        showToast("Привычка добавлена 🌱");
-        if (habit.reminder && "Notification" in window && Notification.permission === "default") {
-          Notification.requestPermission().then(function (permission) {
-            if (permission === "denied") showToast("Напоминания будут видны, пока приложение открыто");
-          }).catch(function (error) {
-            console.error("Не удалось запросить разрешение на уведомления.", error);
-            showToast("Напоминания будут видны, пока приложение открыто");
+        if (!habitInput.name) return;
+        const submitButton = form.querySelector('button[type="submit"]');
+        submitButton.disabled = true;
+        try {
+          const habit = await apiRequest("/api/habits", {
+            method: "POST",
+            body: JSON.stringify(habitInput)
           });
+          habit.reminderSentFor = "";
+          habits.push(habit);
+          closeModal();
+          render();
+          showToast("Привычка добавлена 🌱");
+          if (habit.reminder && "Notification" in window && Notification.permission === "default") {
+            Notification.requestPermission().then(function (permission) {
+              if (permission === "denied") showToast("Напоминания будут видны, пока приложение открыто");
+            }).catch(function (error) {
+              console.error("Не удалось запросить разрешение на уведомления.", error);
+              showToast("Напоминания будут видны, пока приложение открыто");
+            });
+          }
+        } catch (error) {
+          console.error("Не удалось создать привычку.", error);
+          showToast("Не удалось добавить привычку. Попробуйте ещё раз.");
+        } finally {
+          submitButton.disabled = false;
         }
       });
       document.getElementById("subscribeBtn").addEventListener("click", function () {
@@ -442,7 +479,6 @@
           showToast("Подключение подписки можно настроить через Telegram-бота");
         }
       });
-      const tg = window.Telegram && window.Telegram.WebApp;
       if (tg) {
         tg.ready();
         tg.expand();
@@ -451,6 +487,7 @@
       }
       document.getElementById("todayLabel").textContent = new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long" }).format(new Date());
       render();
+      initialize();
       checkReminders();
       window.setInterval(checkReminders, 15000);
     }());

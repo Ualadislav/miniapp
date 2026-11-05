@@ -1,0 +1,11 @@
+node_modules/
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-*
+backups/
+bot_token.txt
+dist/
+coverage/
+алгоритм_миниапп.txt
